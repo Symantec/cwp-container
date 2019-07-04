@@ -1,0 +1,83 @@
+kind: DaemonSet
+apiVersion: extensions/v1beta1
+metadata:
+  name: startup-script
+  namespace: kube-system
+  labels:
+    app: startup-script
+spec:
+  template:
+    metadata:
+      labels:
+        app: startup-script
+    spec:
+      hostPID: true
+      containers:
+        - name: startup-script
+          image: gcr.io/google-containers/startup-script:v1
+          securityContext:
+            privileged: true
+          env:
+          - name: STARTUP_SCRIPT
+            value: |
+              #! /bin/bash
+
+              set -o errexit
+              set -o pipefail
+              set -o nounset
+
+              # Validate apt-get dependencies
+              apt-get update
+              apt-get install zip -y
+              apt-get install rsyslog -y
+
+              # Install CWP agent, downloading the agent in /tmp/symantec folder
+              if [ ! -d "/tmp/symantec" ]; then
+                  mkdir /tmp/symantec
+              fi
+              echo "Created /tmp/symantec folder"
+              cd /tmp/symantec
+
+              # Download CWP agent
+              if [ ! -f "/tmp/symantec/scwp_agent_ubuntu18_package.tar.gz" ]; then
+                  wget '<<pre-defined agent package location for ubuntu 18 installer package>>'
+              fi
+              echo "Downloaded agent"
+              if [ -f "/tmp/symantec/scwp_agent_ubuntu18_package.tar.gz" ]; then
+                  echo "Unzipping agent install"
+                  tar -xzvf scwp_agent_ubuntu18_package.tar.gz
+              else
+                  echo "Failed to find agent package"
+                  exit 1
+              fi
+              echo "Extracted agent installer"
+
+              # Proceed only if it is a first time install, or upgrade
+              if [ -f "/etc/sisips/sis-version.properties" ]; then
+                  for entry in `ls sdcss-agent*`; do
+                      ver=`echo $entry | cut -d'-' -f3`
+                  done
+                  install_ver=`grep '^version' /etc/sisips/sis-version.properties | cut -d'=' -f2`
+                  install_build=`grep '^build.number' /etc/sisips/sis-version.properties | cut -d'=' -f2`
+
+                  IFS='.'
+                  set -- $ver;v1=$1;v2=$2;v3=$3;v4=$4
+                  set -- $install_ver;i1=$1;i2=$2;i3=$3;i4=$install_build
+                  unset IFS
+
+                  if !([ $v1 -gt $i1 ] || ([ $v1 -eq $i1 ] && [ $v2 -gt $i2 ]) || ([ $v1 -eq $i1 ] && [ $v2 -eq $i2 ] && [ $v3 -gt $i3 ]) || ([ $v1 -eq $i1 ] && [ $v2 -eq $i2 ] && [ $v3 -eq $i3 ] && [ $v4 -gt $i4 ])); then
+                      echo "Installed version: $i1.$i2.$i3.$i4 is same or higher than installer version: $v1.$v2.$v3.$v4"
+                      exit 0
+                  fi
+              fi
+
+              # Trigger agent install, with auto-reboot
+              if [ -f "/tmp/symantec/installagent.sh" ]; then
+                  chmod 700 installagent.sh
+                  /tmp/symantec/installagent.sh --reboot
+              else
+                  echo "Failed to find installagent.sh"
+                  exit 1
+              fi
+              exit 0
+
